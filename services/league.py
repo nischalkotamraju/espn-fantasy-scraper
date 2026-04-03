@@ -1,183 +1,105 @@
 """
 Core ESPN Fantasy Basketball service.
-Uses direct HTTP client instead of espn-api to support proxy routing.
+All ESPN API interactions live here — shared by the CLI and REST API.
 """
 
 import os
 from dotenv import load_dotenv
-from .espn_client import fetch, fetch_free_agents
+from espn_api.basketball import League
 
 load_dotenv()
 
-MY_TEAM_NAME = os.getenv("MY_TEAM_NAME", "")
 
-POSITION_MAP = {
-    0: "PG", 1: "SG", 2: "SF", 3: "PF", 4: "C",
-    5: "PG/SG", 6: "SF/PF", 7: "PG/SF", 8: "PF/C",
-    9: "PG/SG/SF", 10: "SG/SF", 11: "PG/SG/SF/PF",
-    12: "PG/SG/SF/PF/C", 13: "UT", 14: "BE", 15: "IR", 17: "BE", 20: "BE", 21: "IR"
-}
-
-INJURY_STATUSES_SHOW = {"OUT", "INJURED_RESERVE", "DAY_TO_DAY", "SUSPENSION", "SUSPENDED"}
-
-def _short_status(status: str) -> str:
-    return {
-        "OUT": "OUT",
-        "INJURED_RESERVE": "IR",
-        "DAY_TO_DAY": "DTD",
-        "SUSPENSION": "SSPD",
-        "SUSPENDED": "SSPD",
-    }.get(status.upper(), status[:4])
-
-def _get_owner(team: dict) -> str:
-    owners = team.get("owners", [])
-    if owners:
-        o = owners[0]
+def _get_owner(team) -> str:
+    if hasattr(team, "owners") and team.owners:
+        o = team.owners[0]
         if isinstance(o, dict):
             return f"{o.get('firstName', '')} {o.get('lastName', '')}".strip()
         return str(o)
-    return team.get("location", "") + " " + team.get("nickname", "")
+    if hasattr(team, "owner"):
+        return str(team.owner)
+    return "Unknown"
 
-def _team_name(team: dict) -> str:
-    return (team.get("location", "") + " " + team.get("nickname", "")).strip() or team.get("name", "Unknown")
 
-def _player_position(player: dict) -> str:
-    slot_id = player.get("lineupSlotId", -1)
-    default_pos = player.get("playerPoolEntry", {}).get("player", {}).get("defaultPositionId", -1)
-    pos_map = {1: "PG", 2: "SG", 3: "SF", 4: "PF", 5: "C", 6: "PG/SG", 7: "SG/SF", 8: "SF/PF", 9: "PF/C"}
-    return pos_map.get(default_pos, "?")
+def get_league() -> League:
+    league_id = int(os.getenv("LEAGUE_ID", 0))
+    year = int(os.getenv("SEASON_YEAR", 2025))
+    espn_s2 = os.getenv("ESPN_S2")
+    swid = os.getenv("ESPN_SWID")
+    if not all([league_id, espn_s2, swid]):
+        raise ValueError("Missing credentials.")
+    return League(league_id=league_id, year=year, espn_s2=espn_s2, swid=swid)
 
-def _injury_status(player: dict) -> str:
-    return player.get("playerPoolEntry", {}).get("injuryStatus", "ACTIVE")
-
-def _avg_points(player: dict) -> float:
-    stats = player.get("playerPoolEntry", {}).get("playerStats", {}).get("appliedStatTotal", 0)
-    return round(float(stats) if stats else 0, 1)
-
-def get_league():
-    """Return raw league data."""
-    return fetch(["mTeam", "mRoster", "mMatchup", "mMatchupScore", "mStandings", "mSettings"])
-
-# ---------------------------------------------------------------------------
-# Standings
-# ---------------------------------------------------------------------------
 
 def get_standings() -> list[dict]:
-    data = get_league()
-    teams = data.get("teams", [])
-    box = fetch(["mMatchup", "mMatchupScore"])
-    schedules = box.get("schedule", [])
-
-    # Get current week scores
-    current_period = data.get("status", {}).get("currentScoringPeriod", {}).get("id", 1)
+    league = get_league()
+    box_scores = league.box_scores()
     week_scores = {}
-    for matchup in schedules:
-        if matchup.get("matchupPeriodId") == current_period or True:
-            home = matchup.get("home", {})
-            away = matchup.get("away", {})
-            if home:
-                week_scores[home.get("teamId")] = round(home.get("totalPoints", 0), 1)
-            if away:
-                week_scores[away.get("teamId")] = round(away.get("totalPoints", 0), 1)
-
-    sorted_teams = sorted(teams, key=lambda t: week_scores.get(t.get("id"), 0), reverse=True)
-
+    for matchup in box_scores:
+        if matchup.home_team:
+            week_scores[matchup.home_team.team_id] = round(matchup.home_score, 1)
+        if matchup.away_team:
+            week_scores[matchup.away_team.team_id] = round(matchup.away_score, 1)
+    teams = sorted(league.teams, key=lambda t: week_scores.get(t.team_id, 0), reverse=True)
     standings = []
-    for rank, team in enumerate(sorted_teams, 1):
-        record = team.get("record", {}).get("overall", {})
+    for rank, team in enumerate(teams, start=1):
         standings.append({
             "rank": rank,
-            "team_name": _team_name(team),
+            "team_name": team.team_name,
             "owner": _get_owner(team),
-            "wins": record.get("wins", 0),
-            "losses": record.get("losses", 0),
-            "week_points": week_scores.get(team.get("id"), 0),
+            "wins": team.wins,
+            "losses": team.losses,
+            "week_points": week_scores.get(team.team_id, 0),
         })
     return standings
 
-# ---------------------------------------------------------------------------
-# Current Matchups
-# ---------------------------------------------------------------------------
-
-def get_current_matchups() -> list[dict]:
-    data = get_league()
-    schedules = data.get("schedule", [])
-    current_period = data.get("status", {}).get("currentMatchupPeriod", 1)
-    teams_by_id = {t["id"]: t for t in data.get("teams", [])}
-
-    matchups = []
-    seen = set()
-    for matchup in schedules:
-        if matchup.get("matchupPeriodId") != current_period:
-            continue
-        home_id = matchup.get("home", {}).get("teamId")
-        away_id = matchup.get("away", {}).get("teamId")
-        if not home_id or not away_id:
-            continue
-        pair = tuple(sorted([home_id, away_id]))
-        if pair in seen:
-            continue
-        seen.add(pair)
-
-        home_team = teams_by_id.get(home_id, {})
-        away_team = teams_by_id.get(away_id, {})
-        matchups.append({
-            "home_team": _team_name(home_team),
-            "home_score": round(matchup.get("home", {}).get("totalPoints", 0), 1),
-            "away_team": _team_name(away_team),
-            "away_score": round(matchup.get("away", {}).get("totalPoints", 0), 1),
-        })
-    return matchups
-
-# ---------------------------------------------------------------------------
-# Injury Report
-# ---------------------------------------------------------------------------
 
 def get_injury_report() -> list[dict]:
-    data = get_league()
+    league = get_league()
     report = []
-    for team in data.get("teams", []):
-        injured = []
-        for entry in team.get("roster", {}).get("entries", []):
-            status = _injury_status(entry)
-            if status.upper() not in ("ACTIVE", "NORMAL", "NA", "NONE", ""):
-                player = entry.get("playerPoolEntry", {}).get("player", {})
-                injured.append({
-                    "name": player.get("fullName", "?"),
-                    "position": _player_position(entry),
+    for team in league.teams:
+        injured_players = []
+        for player in team.roster:
+            status = getattr(player, "injuryStatus", None) or getattr(player, "injury_status", "ACTIVE")
+            if status and status.upper() not in ("ACTIVE", "NORMAL", "NA", "NONE", ""):
+                injured_players.append({
+                    "name": player.name,
+                    "position": player.position,
                     "status": status,
-                    "pro_team": str(player.get("proTeamId", "?")),
+                    "pro_team": getattr(player, "proTeam", "N/A"),
                 })
-        if injured:
+        if injured_players:
             report.append({
-                "team_name": _team_name(team),
+                "team_name": team.team_name,
                 "owner": _get_owner(team),
-                "injured_players": injured,
+                "injured_players": injured_players,
             })
     return report
 
-# ---------------------------------------------------------------------------
-# Free Agents
-# ---------------------------------------------------------------------------
 
 def get_free_agent_suggestions(position: str = None, top_n: int = 15) -> list[dict]:
-    data = fetch_free_agents(size=top_n * 3)
-    players = data.get("players", [])
+    league = get_league()
+    size = top_n * 3 if position else top_n * 2
+    try:
+        fa_list = league.free_agents(size=size)
+    except Exception as e:
+        raise RuntimeError(f"Could not fetch free agents: {e}")
     suggestions = []
-    for entry in players:
-        pool = entry.get("playerPoolEntry", {})
-        player = pool.get("player", {})
-        status = pool.get("injuryStatus", "ACTIVE")
-        if status.upper() in ("OUT", "INJURED_RESERVE"):
+    for player in fa_list:
+        player_pos = getattr(player, "position", "")
+        if position and position.upper() not in player_pos.upper():
             continue
-        avg_pts = round(float(pool.get("playerStats", {}).get("appliedStatTotal", 0) or 0), 1)
-        pos = _player_position(entry)
-        if position and position.upper() not in pos.upper():
+        status = (getattr(player, "injuryStatus", None) or "ACTIVE").upper()
+        if status in ("OUT", "INJURED_RESERVE"):
             continue
+        avg_points = getattr(player, "avg_points", 0) or 0
+        total_points = getattr(player, "total_points", 0) or 0
         suggestions.append({
-            "name": player.get("fullName", "?"),
-            "position": pos,
-            "avg_points": avg_pts,
+            "name": player.name,
+            "position": player_pos,
+            "pro_team": getattr(player, "proTeam", "N/A"),
+            "avg_points": round(avg_points, 1),
+            "total_points": round(total_points, 1),
             "injury_status": status,
         })
         if len(suggestions) >= top_n:
@@ -185,9 +107,28 @@ def get_free_agent_suggestions(position: str = None, top_n: int = 15) -> list[di
     suggestions.sort(key=lambda p: p["avg_points"], reverse=True)
     return suggestions
 
-# ---------------------------------------------------------------------------
-# Helpers used by advice.py
-# ---------------------------------------------------------------------------
 
-def _get_owner_from_team(team):
-    return _get_owner(team)
+def get_current_matchups() -> list[dict]:
+    league = get_league()
+    box_scores = league.box_scores()
+    matchups = []
+    seen_pairs = set()
+    for matchup in box_scores:
+        try:
+            home = matchup.home_team
+            away = matchup.away_team
+            if not home or not away:
+                continue
+            pair = tuple(sorted([home.team_name, away.team_name]))
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            matchups.append({
+                "home_team": home.team_name,
+                "home_score": round(matchup.home_score or 0, 1),
+                "away_team": away.team_name,
+                "away_score": round(matchup.away_score or 0, 1),
+            })
+        except Exception:
+            continue
+    return matchups

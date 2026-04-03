@@ -1,9 +1,7 @@
 """
 ESPN Fantasy Basketball — FastAPI REST layer.
-
-Run with:
-    uvicorn main:app --reload
 """
+import patch_espn  # Must be first — applies proxy patch before espn-api loads
 
 from fastapi import FastAPI, HTTPException, Query
 from services.league import (
@@ -25,7 +23,7 @@ def root():
     return {"message": "ESPN Fantasy Basketball API is running. Visit /docs for all endpoints."}
 
 
-@app.get("/standings", summary="League standings sorted by fantasy points")
+@app.get("/standings")
 def standings():
     try:
         return {"standings": get_standings()}
@@ -33,7 +31,7 @@ def standings():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/injuries", summary="Injury report — injured players grouped by team")
+@app.get("/injuries")
 def injuries():
     try:
         return {"injury_report": get_injury_report()}
@@ -41,10 +39,10 @@ def injuries():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/free-agents", summary="Top available free agents (optional position filter)")
+@app.get("/free-agents")
 def free_agents(
-    position: str = Query(None, description="Filter by position: PG, SG, SF, PF, C"),
-    top_n: int = Query(15, description="Number of results to return", ge=1, le=50),
+    position: str = Query(None),
+    top_n: int = Query(15, ge=1, le=50),
 ):
     try:
         return {"free_agents": get_free_agent_suggestions(position=position, top_n=top_n)}
@@ -52,7 +50,7 @@ def free_agents(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/matchups", summary="Current week matchups with live scores")
+@app.get("/matchups")
 def matchups():
     try:
         return {"matchups": get_current_matchups()}
@@ -60,8 +58,8 @@ def matchups():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/advice", summary="Daily lineup advice: sit/start, FA pickups, injury replacements")
-def daily_advice(team: str = Query(None, description="Your team name (overrides MY_TEAM_NAME in .env)")):
+@app.get("/advice")
+def daily_advice(team: str = Query(None)):
     try:
         from services.advice import get_daily_advice
         return get_daily_advice(team_name=team)
