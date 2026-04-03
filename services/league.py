@@ -18,14 +18,11 @@ _proxy_pass = os.getenv("PROXY_PASS")
 
 if _proxy_host and _proxy_port:
     _proxy_url = f"http://{_proxy_user}:{_proxy_pass}@{_proxy_host}:{_proxy_port}"
-    _proxies = {"http": _proxy_url, "https": _proxy_url}
-
-    # Monkey-patch requests.Session so espn-api uses the proxy automatically
-    _original_request = requests.Session.request
-    def _proxied_request(self, method, url, **kwargs):
-        kwargs.setdefault("proxies", _proxies)
-        return _original_request(self, method, url, **kwargs)
-    requests.Session.request = _proxied_request
+    # Set environment variables so urllib3 (used by requests internally) picks them up
+    os.environ["HTTP_PROXY"] = _proxy_url
+    os.environ["HTTPS_PROXY"] = _proxy_url
+    os.environ["http_proxy"] = _proxy_url
+    os.environ["https_proxy"] = _proxy_url
 
 
 def _get_owner(team) -> str:
