@@ -4,10 +4,28 @@ All ESPN API interactions live here — shared by the CLI and REST API.
 """
 
 import os
+import requests
 from dotenv import load_dotenv
 from espn_api.basketball import League
 
 load_dotenv()
+
+# Route all requests through residential proxy to bypass ESPN's cloud IP blocks
+_proxy_host = os.getenv("PROXY_HOST")
+_proxy_port = os.getenv("PROXY_PORT")
+_proxy_user = os.getenv("PROXY_USER")
+_proxy_pass = os.getenv("PROXY_PASS")
+
+if _proxy_host and _proxy_port:
+    _proxy_url = f"http://{_proxy_user}:{_proxy_pass}@{_proxy_host}:{_proxy_port}"
+    _proxies = {"http": _proxy_url, "https": _proxy_url}
+
+    # Monkey-patch requests.Session so espn-api uses the proxy automatically
+    _original_request = requests.Session.request
+    def _proxied_request(self, method, url, **kwargs):
+        kwargs.setdefault("proxies", _proxies)
+        return _original_request(self, method, url, **kwargs)
+    requests.Session.request = _proxied_request
 
 
 def _get_owner(team) -> str:
