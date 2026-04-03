@@ -1,8 +1,6 @@
 """
-ESPN Fantasy Basketball — FastAPI REST layer.
+ESPN Fantasy Basketball - FastAPI REST layer.
 """
-import patch_espn  # Must be first — applies proxy patch before espn-api loads
-
 from fastapi import FastAPI, HTTPException, Query
 from services.league import (
     get_standings,
@@ -11,17 +9,11 @@ from services.league import (
     get_current_matchups,
 )
 
-app = FastAPI(
-    title="ESPN Fantasy Basketball API",
-    description="Scraper & analytics API for your private ESPN fantasy basketball league.",
-    version="1.0.0",
-)
-
+app = FastAPI(title="ESPN Fantasy Basketball API", version="1.0.0")
 
 @app.get("/")
 def root():
     return {"message": "ESPN Fantasy Basketball API is running. Visit /docs for all endpoints."}
-
 
 @app.get("/standings")
 def standings():
@@ -30,7 +22,6 @@ def standings():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.get("/injuries")
 def injuries():
     try:
@@ -38,17 +29,12 @@ def injuries():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.get("/free-agents")
-def free_agents(
-    position: str = Query(None),
-    top_n: int = Query(15, ge=1, le=50),
-):
+def free_agents(position: str = Query(None), top_n: int = Query(15, ge=1, le=50)):
     try:
         return {"free_agents": get_free_agent_suggestions(position=position, top_n=top_n)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/matchups")
 def matchups():
@@ -56,7 +42,6 @@ def matchups():
         return {"matchups": get_current_matchups()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/advice")
 def daily_advice(team: str = Query(None)):
