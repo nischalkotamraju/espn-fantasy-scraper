@@ -100,8 +100,14 @@ def get_injury_report():
     return report
 
 def get_free_agent_suggestions(position=None, top_n=15):
-    data = _fetch(["mFreeAgent"])
+    import json as _json
+    s = _session()
+    filters = {"players":{"filterStatus":{"value":["FREEAGENT","WAIVERS"]},"limit":top_n*3,"sortPercOwned":{"sortPriority":1,"sortAsc":False}}}
+    r = s.get(_url(), params={"view":"kona_player_info"}, headers={"x-fantasy-filter": _json.dumps(filters)}, timeout=15)
+    r.raise_for_status()
+    data = r.json()
     suggestions = []
+    pos_map = {1:"PG",2:"SG",3:"SF",4:"PF",5:"C"}
     for entry in data.get("players", []):
         player = entry.get("player", {})
         if not player:
@@ -113,12 +119,14 @@ def get_free_agent_suggestions(position=None, top_n=15):
         if status in ("OUT","INJURED_RESERVE"):
             continue
         pos_id = player.get("defaultPositionId", 0)
-        pos_map = {1:"PG",2:"SG",3:"SF",4:"PF",5:"C"}
         pos = pos_map.get(pos_id, "?")
         if position and position.upper() not in pos:
             continue
-        ratings = entry.get("ratings", {})
-        avg_pts = round(float(ratings.get("0", {}).get("averageRating", 0) or 0), 1)
+        avg_pts = 0.0
+        for stat in player.get("stats", []):
+            if stat.get("statSourceId") == 0 and stat.get("statSplitTypeId") == 0 and stat.get("seasonId") == 2026:
+                avg_pts = round(float(stat.get("appliedAverage", 0) or 0), 1)
+                break
         suggestions.append({"name": name, "position": pos, "avg_points": avg_pts, "injury_status": status})
         if len(suggestions) >= top_n:
             break
