@@ -1,4 +1,5 @@
 import os
+import json
 import requests
 from dotenv import load_dotenv
 
@@ -16,8 +17,8 @@ def _session():
     u = os.getenv("PROXY_USER")
     w = os.getenv("PROXY_PASS")
     if h and p and u and w:
-        url = f"http://{u}:{w}@{h}:{p}"
-        s.proxies = {"http": url, "https": url}
+        proxy_url = f"http://{u}:{w}@{h}:{p}"
+        s.proxies = {"http": proxy_url, "https": proxy_url}
     return s
 
 def _url():
@@ -29,14 +30,13 @@ def _fetch(views):
     return r.json()
 
 def _team_name(t):
-    return (t.get("location","") + " " + t.get("nickname","")).strip() or "Unknown"
+    return t.get("name", "Unknown")
 
 def _owner(t):
     owners = t.get("owners", [])
-    if owners:
+    if owners and isinstance(owners[0], dict):
         o = owners[0]
-        if isinstance(o, dict):
-            return f"{o.get('firstName','')} {o.get('lastName','')}".strip()
+        return f"{o.get('firstName','')} {o.get('lastName','')}".strip()
     return ""
 
 def get_league():
@@ -44,7 +44,6 @@ def get_league():
 
 def get_standings():
     data = _fetch(["mTeam","mMatchup","mMatchupScore","mStandings"])
-    teams_by_id = {t["id"]: t for t in data.get("teams", [])}
     current = data.get("status", {}).get("currentMatchupPeriod", 1)
     week_scores = {}
     for m in data.get("schedule", []):
@@ -101,7 +100,6 @@ def get_injury_report():
     return report
 
 def get_free_agent_suggestions(position=None, top_n=15):
-    import json
     s = _session()
     filters = {"players":{"filterStatus":{"value":["FREEAGENT","WAIVERS"]},"limit":top_n*3,"sortPercOwned":{"sortPriority":1,"sortAsc":False}}}
     r = s.get(_url(), params={"view":"kona_player_info"}, headers={"x-fantasy-filter": json.dumps(filters)}, timeout=15)
@@ -114,8 +112,18 @@ def get_free_agent_suggestions(position=None, top_n=15):
         if status in ("OUT","INJURED_RESERVE"):
             continue
         player = pool.get("player", {})
-        avg_pts = round(float(pool.get("playerStats", {}).get("appliedStatTotal", 0) or 0), 1)
-        suggestions.append({"name": player.get("fullName","?"), "position": "?", "avg_points": avg_pts, "injury_status": status})
+        name = player.get("fullName", "")
+        if not name:
+            continue
+        # avg points from stats
+        stats = pool.get("playerStats", {})
+        avg_pts = round(float(stats.get("appliedAverage", stats.get("appliedStatTotal", 0)) or 0), 1)
+        pos_id = player.get("defaultPositionId", 0)
+        pos_map = {1:"PG",2:"SG",3:"SF",4:"PF",5:"C"}
+        pos = pos_map.get(pos_id, "?")
+        if position and position.upper() not in pos:
+            continue
+        suggestions.append({"name": name, "position": pos, "avg_points": avg_pts, "injury_status": status})
         if len(suggestions) >= top_n:
             break
     suggestions.sort(key=lambda p: p["avg_points"], reverse=True)
